@@ -1,5 +1,4 @@
 use anyhow::{Context, bail};
-use blake3::Hash;
 use cipher::{Decryptor, Encryptor, hash_password};
 use clap::Parser;
 use cli::{Cli, Command, EntryCommand};
@@ -57,35 +56,13 @@ fn main() -> anyhow::Result<()> {
             let mut diary =
                 File::open(format!("{name}.diary")).context("Failed to open diary file")?;
 
-            let mut salt = [0u8; 16];
-            let mut nonce = [0u8; 24];
-            let mut hash_nonce = [0u8; 32];
-            let mut hash_bytes = [0u8; 32];
-
-            diary.read_exact(&mut salt)?;
-            diary.read_exact(&mut nonce)?;
-            diary.read_exact(&mut hash_nonce)?;
-            diary.read_exact(&mut hash_bytes)?;
-
-            let key_hash = hash_password(key.as_bytes(), &salt)?;
-
-            let decrypted = Decryptor::new(
-                diary,
-                &key_hash,
-                &nonce,
-                &hash_nonce,
-                Hash::from_bytes(hash_bytes),
-            );
+            let decrypted = Decryptor::new(diary, key.as_bytes())?;
             let decompressed = GzDecoder::new(decrypted);
             let mut archive = Archive::new(decompressed);
 
             archive.unpack(&name).context("Failed to unpack diary")?;
 
             let cipher = archive.into_inner().into_inner();
-
-            if !cipher.verify() {
-                bail!("Decrypted data is invalid!");
-            }
 
             fs::remove_file(format!("{name}.diary")).context("Failed to remove diary file")?;
 
@@ -97,58 +74,23 @@ fn main() -> anyhow::Result<()> {
             let entries: Entries =
                 serde_json::from_reader(diary_handle).context("Failed to deserialize diary")?;
 
-            let mut salt = [0u8; 16];
-            let mut nonce = [0u8; 24];
-            let mut hash_nonce = [0u8; 32];
+            let out =
+                File::create_new(format!("{name}.diary")).context("Failed to create diary file")?;
 
-            let mut rng = rand::rng();
-            rng.fill_bytes(&mut salt);
-            rng.fill_bytes(&mut nonce);
-            rng.fill_bytes(&mut hash_nonce);
-
-            let key_hash = hash_password(entries.key.as_bytes(), &salt)?;
-
-            let stage_out = File::create_new(format!("{name}.diary.stage"))
-                .context("Failed to create diary staging file")?;
-
-            let encrypted = Encryptor::new(stage_out, &key_hash, &nonce, &hash_nonce);
+            let encrypted = Encryptor::new(out, entries.key.as_bytes())?;
             let compressed = GzEncoder::new(encrypted, Compression::new(level));
             let mut archive = Builder::new(compressed);
 
             archive.append_dir_all(".", &name)?;
             archive.finish()?;
 
-            let cipher = archive
+            archive
                 .into_inner()
                 .context("Failed to extract inner stream to archive")?
                 .finish()
                 .context("Failed to finalize compression")?;
 
-            let hash = cipher.finalize();
-
-            let mut out =
-                File::create_new(format!("{name}.diary")).context("Failed to create diary file")?;
-
-            out.write_all(&salt)?;
-            out.write_all(&nonce)?;
-            out.write_all(&hash_nonce)?;
-            out.write_all(hash.as_bytes())?;
-
-            let mut staging = cipher.into_inner();
-
-            staging.flush()?;
-
-            staging.seek(SeekFrom::Start(0))?;
-
-            io::copy(&mut staging, &mut out)
-                .context("Failed to copy staging file to diary file")?;
-
-            out.flush()?;
-
             fs::remove_dir_all(&name).context("Failed to remove diary directory")?;
-
-            fs::remove_file(format!("{name}.diary.stage"))
-                .context("Failed to remove staging file")?;
 
             println!("Diary closed.");
         }
