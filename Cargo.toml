@@ -1,0 +1,30 @@
+[package]
+name = "diary"
+version = "0.1.0"
+edition = "2024"
+description = "A private, encrypted diary for your thoughts in your command line"
+authors = ["Logan-010"]
+
+[dependencies]
+anyhow = "1.0.98"
+argon2 = { version = "0.5.3", features = ["std"] }
+blake3 = { version = "1.8.2", features = ["serde"] }
+chacha20 = { version = "0.9.1", features = ["std"] }
+clap = { version = "4.5.42", features = ["derive"] }
+flate2 = "1.1.2"
+rand = "0.9.2"
+rpassword = "7.4.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.142", features = ["std"] }
+tar = "0.4.44"
+time = { version = "0.3.41", features = ["local-offset", "serde"] }
+uuid = { version = "1.17.0", features = ["serde", "v4"] }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+debug = false
+incremental = false 
