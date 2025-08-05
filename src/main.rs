@@ -137,7 +137,11 @@ fn main() -> anyhow::Result<()> {
             .context("Failed to deserialize diary")?;
 
             match entry_command {
-                EntryCommand::Add { name } => {
+                EntryCommand::Add {
+                    name,
+                    description,
+                    location,
+                } => {
                     let id = Uuid::new_v4();
                     let timestamp = OffsetDateTime::now_local()?;
                     let path = PathBuf::from(format!("{id}.md"));
@@ -152,6 +156,8 @@ fn main() -> anyhow::Result<()> {
                             id,
                             path,
                             timestamp,
+                            location,
+                            description,
                         },
                     );
 
@@ -194,15 +200,32 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 EntryCommand::Search { query } => {
-                    for key in entries.entries.keys().filter(|k| k.contains(&query)) {
-                        let entry = entries.entries.get(key).unwrap();
-
+                    for (key, entry) in entries.entries.iter().filter(|(k, v)| {
+                        let matches_key = k.contains(&query);
+                        let matches_location =
+                            v.location.as_ref().map_or(false, |l| l.contains(&query));
+                        let matches_description =
+                            v.description.as_ref().map_or(false, |d| d.contains(&query));
+                        matches_key || matches_location || matches_description
+                    }) {
                         println!(
-                            "{} ({}):\n\tpath: {}\n\tcreated at: {}",
+                            "{} ({}):\n\tpath: {}\n\ttimestamp: {}{}{}",
                             key,
                             entry.id,
                             entry.path.display(),
-                            entry.timestamp
+                            entry.timestamp,
+                            {
+                                match entry.location.as_ref() {
+                                    Some(l) => format!("\n\tlocation: {}", l),
+                                    None => String::new(),
+                                }
+                            },
+                            {
+                                match entry.description.as_ref() {
+                                    Some(d) => format!("\n\tdescription: {}", d),
+                                    None => String::new(),
+                                }
+                            },
                         );
                     }
                 }

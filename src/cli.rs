@@ -44,6 +44,14 @@ pub enum EntryCommand {
     Add {
         /// Name for entry
         name: String,
+
+        /// Optional description
+        #[arg(long, short = 'D', required = false, default_value = None)]
+        description: Option<String>,
+
+        /// Optional location
+        #[arg(long, short = 'L', required = false, default_value = None)]
+        location: Option<String>,
     },
     /// Remove an entry
     Remove {
@@ -54,7 +62,7 @@ pub enum EntryCommand {
     List,
     /// Search for entries by their name
     Search {
-        /// Entries name to find
+        /// Search through entry names, locations, and descriptions to find matches
         query: String,
     },
 }

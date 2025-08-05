@@ -14,4 +14,6 @@ pub struct Entry {
     pub id: Uuid,
     pub path: PathBuf,
     pub timestamp: OffsetDateTime,
+    pub location: Option<String>,
+    pub description: Option<String>,
 }
