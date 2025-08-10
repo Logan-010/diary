@@ -189,23 +189,39 @@ fn main() -> anyhow::Result<()> {
                         .context("Failed to replace old diary file")?;
                 }
                 EntryCommand::List => {
-                    for entry in entries.entries.iter() {
+                    for (key, entry) in entries.entries.iter() {
                         println!(
-                            "{} ({}):\n\tpath: {}\n\tcreated at: {}",
-                            entry.0,
-                            entry.1.id,
-                            entry.1.path.display(),
-                            entry.1.timestamp
+                            "{} ({}):\n\tpath: {}\n\ttimestamp: {}{}{}",
+                            key,
+                            entry.id,
+                            entry.path.display(),
+                            entry.timestamp,
+                            {
+                                match entry.location.as_ref() {
+                                    Some(l) => format!("\n\tlocation: {l}"),
+                                    None => String::new(),
+                                }
+                            },
+                            {
+                                match entry.description.as_ref() {
+                                    Some(d) => format!("\n\tdescription: {d}"),
+                                    None => String::new(),
+                                }
+                            },
                         );
                     }
                 }
                 EntryCommand::Search { query } => {
                     for (key, entry) in entries.entries.iter().filter(|(k, v)| {
-                        let matches_key = k.contains(&query);
-                        let matches_location =
-                            v.location.as_ref().map_or(false, |l| l.contains(&query));
-                        let matches_description =
-                            v.description.as_ref().map_or(false, |d| d.contains(&query));
+                        let matches_key = k.to_lowercase().contains(&query.to_lowercase());
+                        let matches_location = v
+                            .location
+                            .as_ref()
+                            .is_some_and(|l| l.to_lowercase().contains(&query.to_lowercase()));
+                        let matches_description = v
+                            .description
+                            .as_ref()
+                            .is_some_and(|d| d.to_lowercase().contains(&query.to_lowercase()));
                         matches_key || matches_location || matches_description
                     }) {
                         println!(
@@ -216,13 +232,13 @@ fn main() -> anyhow::Result<()> {
                             entry.timestamp,
                             {
                                 match entry.location.as_ref() {
-                                    Some(l) => format!("\n\tlocation: {}", l),
+                                    Some(l) => format!("\n\tlocation: {l}"),
                                     None => String::new(),
                                 }
                             },
                             {
                                 match entry.description.as_ref() {
-                                    Some(d) => format!("\n\tdescription: {}", d),
+                                    Some(d) => format!("\n\tdescription: {d}"),
                                     None => String::new(),
                                 }
                             },
