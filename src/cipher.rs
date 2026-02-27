@@ -1,46 +1,48 @@
-use anyhow::anyhow;
-use argon2::{Algorithm, Argon2, Params, Version};
-use chacha20poly1305::{
-    XChaCha20Poly1305,
-    aead::{KeyInit, stream},
+use crate::consts::{CAPACITY, KEY_LENGTH, NONCE_LENGTH, OVERHEAD, SALT_LENGTH};
+use aes_gcm_siv::{
+    Aes256GcmSiv, KeyInit,
+    aead::stream::{DecryptorBE32, EncryptorBE32},
 };
+use argon2::Argon2;
+use color_eyre::eyre::anyhow;
+use rand::Rng;
 use std::io::{Read, Write};
 
-pub fn hash_password(password: &[u8], salt: &[u8; 16]) -> argon2::Result<[u8; 32]> {
-    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::DEFAULT);
-
-    let mut out = [0u8; 32];
-
-    argon2.hash_password_into(password, salt, &mut out)?;
-
+pub fn hash_password(key: &[u8], salt: &[u8; SALT_LENGTH]) -> argon2::Result<[u8; KEY_LENGTH]> {
+    let mut out = [0u8; KEY_LENGTH];
+    Argon2::default().hash_password_into(key, salt, &mut out)?;
     Ok(out)
 }
 
 pub fn encrypt(
-    mut src: impl Read,
-    mut dst: impl Write,
-    key: &[u8; 32],
-    nonce: &[u8; 19],
-) -> Result<(), anyhow::Error> {
-    let aead = XChaCha20Poly1305::new(key.as_ref().into());
-    let mut stream_encryptor = stream::EncryptorBE32::from_aead(aead, nonce.as_ref().into());
+    mut from: impl Read,
+    mut to: impl Write,
+    key: [u8; KEY_LENGTH],
+) -> color_eyre::Result<()> {
+    let mut nonce = [0u8; NONCE_LENGTH];
+    rand::rng().fill_bytes(&mut nonce);
 
-    const BUFFER_LEN: usize = 500;
-    let mut buffer = [0u8; BUFFER_LEN];
+    to.write_all(&nonce)?;
 
+    let cipher = Aes256GcmSiv::new(&key.into());
+    let mut stream = EncryptorBE32::from_aead(cipher, &nonce.into());
+
+    let mut buf = vec![0u8; CAPACITY];
     loop {
-        let read_count = src.read(&mut buffer)?;
+        let read = from.read(&mut buf)?;
 
-        if read_count == BUFFER_LEN {
-            let ciphertext = stream_encryptor
-                .encrypt_next(buffer.as_slice())
-                .map_err(|err| anyhow!("Encrypting large file: {}", err))?;
-            dst.write_all(&ciphertext)?;
+        if read == CAPACITY {
+            stream
+                .encrypt_next_in_place(b"", &mut buf)
+                .map_err(|e| anyhow!("Error encrypting full chunk: {}", e))?;
+            to.write_all(&buf)?;
+            buf.truncate(CAPACITY);
         } else {
-            let ciphertext = stream_encryptor
-                .encrypt_last(&buffer[..read_count])
-                .map_err(|err| anyhow!("Encrypting large file: {}", err))?;
-            dst.write_all(&ciphertext)?;
+            buf.truncate(read);
+            stream
+                .encrypt_last_in_place(b"", &mut buf)
+                .map_err(|e| anyhow!("Error encrypting last chunk: {}", e))?;
+            to.write_all(&buf)?;
             break;
         }
     }
@@ -49,32 +51,32 @@ pub fn encrypt(
 }
 
 pub fn decrypt(
-    mut src: impl Read,
-    mut dst: impl Write,
-    key: &[u8; 32],
-    nonce: &[u8; 19],
-) -> Result<(), anyhow::Error> {
-    let aead = XChaCha20Poly1305::new(key.as_ref().into());
-    let mut stream_decryptor = stream::DecryptorBE32::from_aead(aead, nonce.as_ref().into());
+    mut from: impl Read,
+    mut to: impl Write,
+    key: [u8; KEY_LENGTH],
+) -> color_eyre::Result<()> {
+    let mut nonce = [0u8; NONCE_LENGTH];
+    from.read_exact(&mut nonce)?;
 
-    const BUFFER_LEN: usize = 500 + 16;
-    let mut buffer = [0u8; BUFFER_LEN];
+    let cipher = Aes256GcmSiv::new(&key.into());
+    let mut stream = DecryptorBE32::from_aead(cipher, &nonce.into());
 
+    let mut buf = vec![0u8; CAPACITY + OVERHEAD];
     loop {
-        let read_count = src.read(&mut buffer)?;
+        let read = from.read(&mut buf)?;
 
-        if read_count == BUFFER_LEN {
-            let plaintext = stream_decryptor
-                .decrypt_next(buffer.as_slice())
-                .map_err(|err| anyhow!("Decrypting: {}", err))?;
-            dst.write_all(&plaintext)?;
-        } else if read_count == 0 {
-            break;
+        if read == CAPACITY + OVERHEAD {
+            stream
+                .decrypt_next_in_place(b"", &mut buf)
+                .map_err(|e| anyhow!("Error decrypting full chunk: {}", e))?;
+            to.write_all(&buf)?;
+            buf.resize(CAPACITY + OVERHEAD, 0);
         } else {
-            let plaintext = stream_decryptor
-                .decrypt_last(&buffer[..read_count])
-                .map_err(|err| anyhow!("Decrypting: {}", err))?;
-            dst.write_all(&plaintext)?;
+            buf.truncate(read);
+            stream
+                .decrypt_last_in_place(b"", &mut buf)
+                .map_err(|e| anyhow!("Error decrypting last chunk: {}", e))?;
+            to.write_all(&buf)?;
             break;
         }
     }

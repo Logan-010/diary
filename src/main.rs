@@ -1,10 +1,10 @@
-use anyhow::{Context, bail};
 use cipher::hash_password;
 use clap::Parser;
 use cli::{Cli, Command, EntryCommand};
+use color_eyre::eyre::{Context, bail};
 use entries::{Entries, Entry};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
-use rand::RngCore;
+use rand::Rng;
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -15,11 +15,16 @@ use tar::{Archive, Builder};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+mod consts;
+use consts::SALT_LENGTH;
+
 mod cipher;
 mod cli;
 mod entries;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -51,35 +56,32 @@ fn main() -> anyhow::Result<()> {
             println!("Created diary {name}");
         }
         Command::Open { name } => {
-            let key = rpassword::prompt_password("Enter password: ")?;
-
             let mut diary =
                 File::open(format!("{name}.diary")).context("Failed to open diary file")?;
-            let mut decrypted = File::create_new(format!("{name}.tar.gz"))
-                .context("Failed to create temporary diary file")?;
 
-            let mut salt = [0u8; 16];
+            let key = rpassword::prompt_password("Enter password: ")?;
+
+            let mut salt = [0u8; SALT_LENGTH];
             diary.read_exact(&mut salt)?;
-            let mut nonce = [0u8; 19];
-            diary.read_exact(&mut nonce)?;
 
-            let key_hash = cipher::hash_password(key.as_bytes(), &salt)?;
+            let key = hash_password(key.as_bytes(), &salt)?;
 
-            cipher::decrypt(diary, &mut decrypted, &key_hash, &nonce)
-                .context("Failed to decrypt")?;
+            let mut decrypted = File::create_new(format!("{name}.tar.gz"))
+                .context("Failed to create archive file")?;
 
-            decrypted.flush()?;
+            cipher::decrypt(diary, &mut decrypted, key).context("Failed to decrypt")?;
 
-            decrypted.seek(SeekFrom::Start(0))?;
+            decrypted
+                .seek(SeekFrom::Start(0))
+                .context("Failed to seek")?;
 
             let decompressed = GzDecoder::new(decrypted);
             let mut archive = Archive::new(decompressed);
 
             archive.unpack(&name).context("Failed to unpack diary")?;
 
-            fs::remove_file(format!("{name}.tar.gz"))
-                .context("Failed to remove temporary diary file")?;
             fs::remove_file(format!("{name}.diary")).context("Failed to remove diary file")?;
+            fs::remove_file(format!("{name}.tar.gz")).context("Failed to remove diary archive")?;
 
             println!("Diary opened.");
         }
@@ -89,44 +91,33 @@ fn main() -> anyhow::Result<()> {
             let entries: Entries =
                 serde_json::from_reader(diary_handle).context("Failed to deserialize diary")?;
 
-            let out = File::create_new(format!("{name}.tar.gz"))
-                .context("Failed to create diary file")?;
-
-            let compressed = GzEncoder::new(out, Compression::new(level));
+            let archive_file =
+                File::create_new(format!("{name}.tar.gz")).context("Failed to create archive")?;
+            let compressed = GzEncoder::new(archive_file, Compression::new(level));
             let mut archive = Builder::new(compressed);
 
             archive.append_dir_all(".", &name)?;
-            archive.finish()?;
 
-            let mut unencrypted = archive
-                .into_inner()
-                .context("Failed to extract inner stream to archive")?
-                .finish()
-                .context("Failed to finalize compression")?;
+            let mut archive_file = archive.into_inner()?.finish()?;
+
+            archive_file
+                .seek(SeekFrom::Start(0))
+                .context("Failed to seek")?;
 
             let mut diary =
                 File::create_new(format!("{name}.diary")).context("Failed to create diary file")?;
 
-            let mut salt = [0u8; 16];
+            let mut salt = [0u8; SALT_LENGTH];
             rand::rng().fill_bytes(&mut salt);
-            let mut nonce = [0u8; 19];
-            rand::rng().fill_bytes(&mut nonce);
 
-            let key_hash = hash_password(entries.key.as_bytes(), &salt)?;
+            let key = hash_password(entries.key.as_bytes(), &salt)?;
 
             diary.write_all(&salt)?;
-            diary.write_all(&nonce)?;
 
-            unencrypted.seek(SeekFrom::Start(0))?;
-
-            cipher::encrypt(unencrypted, &mut diary, &key_hash, &nonce)
-                .context("Failed to encrypt file")?;
-
-            diary.flush()?;
+            cipher::encrypt(archive_file, diary, key).context("Failed to encrypt")?;
 
             fs::remove_dir_all(&name).context("Failed to remove diary directory")?;
-            fs::remove_file(format!("{name}.tar.gz"))
-                .context("Failed to remove temporary diary file")?;
+            fs::remove_file(format!("{name}.tar.gz")).context("Failed to remove diary archive")?;
 
             println!("Diary closed.");
         }
